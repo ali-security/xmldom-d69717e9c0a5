@@ -1,4 +1,5 @@
 require('./attr');
+require('./cdata-section');
 require('./clone');
 require('./document');
 require('./element');
