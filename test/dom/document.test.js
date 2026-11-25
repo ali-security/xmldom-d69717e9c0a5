@@ -8,6 +8,20 @@ const HIERARCHY_REQUEST_ERR = /Hierarchy request error/
 const NOT_FOUND_ERR = /Not found/
 
 describe('Document.prototype', () => {
+	describe('getElementsByTagName', () => {
+		it('getElementsByTagName on a 10,100-depth tree succeeds without throwing RangeError (GHSA-2v35-w6hq-6mfw)', () => {
+			const doc = new DOMImplementation().createDocument(null, 'root')
+			let current = doc.documentElement
+			for (let i = 0; i < 10100; i++) {
+				const child = doc.createElement('n')
+				current.appendChild(child)
+				current = child
+			}
+			expect(() => doc.documentElement.getElementsByTagName('n').length).not.toThrow()
+			expect(doc.documentElement.getElementsByTagName('n')).toHaveLength(10100)
+		})
+	})
+
 	describe('insertBefore', () => {
 		it('should insert the first element and set `documentElement`', () => {
 			const doc = new DOMImplementation().createDocument(null, '')

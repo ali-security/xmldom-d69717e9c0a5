@@ -232,3 +232,22 @@ describe('XMLSerializer Comment serialization with requireWellFormed', () => {
 		).toThrow(INVALID_STATE_ERR)
 	})
 })
+
+describe('deep tree (stack overflow guard)', () => {
+	it('serializeToString on a 5,100-depth tree succeeds without throwing RangeError (GHSA-2v35-w6hq-6mfw)', () => {
+		const deepDoc = new DOMImplementation().createDocument(null, 'root')
+		let current = deepDoc.documentElement
+		for (let i = 0; i < 5100; i++) {
+			const child = deepDoc.createElement('n')
+			current.appendChild(child)
+			current = child
+		}
+		expect(() => new XMLSerializer().serializeToString(deepDoc.documentElement)).not.toThrow()
+	})
+
+	it('parseFromString and serializeToString round-trip a 5,100-depth document (GHSA-2v35-w6hq-6mfw)', () => {
+		const xml = '<root>' + '<n>'.repeat(5100) + 'leaf' + '</n>'.repeat(5100) + '</root>'
+		const doc = new DOMParser().parseFromString(xml, MIME_TYPE.XML_TEXT)
+		expect(new XMLSerializer().serializeToString(doc)).toBe(xml)
+	})
+})

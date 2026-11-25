@@ -410,18 +410,34 @@ Node.prototype = {
 		return cloneNode(this.ownerDocument||this,this,deep);
 	},
 	// Modified in DOM Level 2:
+	/**
+	 * Merges adjacent text nodes in the subtree rooted at this node.
+	 *
+	 * The subtree is traversed iteratively (see {@link walkDOM}), so deeply nested trees can not
+	 * exhaust the call stack.
+	 *
+	 * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+	 */
 	normalize:function(){
-		var child = this.firstChild;
-		while(child){
-			var next = child.nextSibling;
-			if(next && next.nodeType == TEXT_NODE && child.nodeType == TEXT_NODE){
-				this.removeChild(next);
-				child.appendData(next.data);
-			}else{
-				child.normalize();
-				child = next;
+		walkDOM(this, null, {
+			enter:function(node){
+				// Merge adjacent text children of node before walkDOM schedules them.
+				// walkDOM reads lastChild/previousSibling after enter returns, so the
+				// surviving post-merge children are what it descends into.
+				var child = node.firstChild;
+				while(child){
+					var next = child.nextSibling;
+					if(next && next.nodeType == TEXT_NODE && child.nodeType == TEXT_NODE){
+						node.removeChild(next);
+						child.appendData(next.data);
+						// Do not advance child: re-check new nextSibling for another text run
+					}else{
+						child = next;
+					}
+				}
+				return true; // descend into surviving children
 			}
-		}
+		});
 	},
   	// Introduced in DOM Level 2:
 	isSupported:function(feature, version){
@@ -483,19 +499,114 @@ copy(NodeType,Node);
 copy(NodeType,Node.prototype);
 
 /**
- * @param callback return true for continue,false for break
- * @return boolean true: break visit;
+ * Visits every node in the subtree rooted at `node` in depth-first pre-order.
+ *
+ * Delegates to {@link walkDOM} for traversal, so deeply nested trees can not exhaust the call
+ * stack.
+ *
+ * @param {Node} node
+ * Root of the subtree to visit.
+ * @param {function(Node): boolean} callback
+ * Called for each node. Return a truthy value to stop traversal early.
+ * @return {boolean} `true` if traversal was aborted by the callback, `false` otherwise.
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
  */
 function _visitNode(node,callback){
-	if(callback(node)){
-		return true;
-	}
-	if(node = node.firstChild){
-		do{
-			if(_visitNode(node,callback)){return true}
-        }while(node=node.nextSibling)
-    }
+	return walkDOM(node, null, {
+		enter:function(n){
+			return callback(n) ? walkDOM.STOP : true;
+		}
+	}) === walkDOM.STOP;
 }
+
+/**
+ * Depth-first pre/post-order DOM tree walker.
+ *
+ * Visits every node in the subtree rooted at `node`. For each node:
+ *
+ * 1. Calls `callbacks.enter(node, context)` before descending into the node's children. The
+ * return value becomes the `context` passed to each child's `enter` call and to the matching
+ * `exit` call.
+ * 2. If `enter` returns `null` or `undefined`, the node's children are skipped;
+ * sibling traversal continues normally.
+ * 3. If `enter` returns `walkDOM.STOP`, the entire traversal is aborted immediately — no
+ * further `enter` or `exit` calls are made.
+ * 4. `lastChild` and `previousSibling` are read **after** `enter` returns, so `enter` may
+ * safely modify the node's own child list before the walker descends. Modifying siblings of
+ * the current node or any other part of the tree produces unpredictable results: nodes already
+ * queued on the stack are visited regardless of DOM changes, and newly inserted nodes outside
+ * the current child list are never visited.
+ * 5. Calls `callbacks.exit(node, context)` (if provided) after all of a node's children have
+ * been visited, passing the same `context` that `enter`
+ * returned for that node.
+ *
+ * This implementation uses an explicit stack and does not recurse — it is safe on arbitrarily
+ * deep trees.
+ *
+ * @param {Node} node
+ * Root of the subtree to walk.
+ * @param {*} context
+ * Initial context value passed to the root node's `enter`.
+ * @param {{ enter: function(Node, *): *, exit?: function(Node, *): void }} callbacks
+ * @returns {void | walkDOM.STOP}
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+ */
+function walkDOM(node, context, callbacks) {
+	// Each stack frame is {node, context, phase}:
+	//   walkDOM.ENTER — call enter, then push children
+	//   walkDOM.EXIT  — call exit
+	var stack = [{ node: node, context: context, phase: walkDOM.ENTER }];
+	while (stack.length > 0) {
+		var frame = stack.pop();
+		if (frame.phase === walkDOM.ENTER) {
+			var childContext = callbacks.enter(frame.node, frame.context);
+			if (childContext === walkDOM.STOP) {
+				return walkDOM.STOP;
+			}
+			// Push exit frame before children so it fires after all children are processed (Last In First Out)
+			stack.push({ node: frame.node, context: childContext, phase: walkDOM.EXIT });
+			if (childContext === null || childContext === undefined) {
+				continue; // skip children
+			}
+			// lastChild is read after enter returns, so enter may modify the child list.
+			var child = frame.node.lastChild;
+			// Traverse from lastChild backwards so that pushing onto the stack
+			// naturally yields firstChild on top (processed first).
+			while (child) {
+				stack.push({ node: child, context: childContext, phase: walkDOM.ENTER });
+				child = child.previousSibling;
+			}
+		} else {
+			// frame.phase === walkDOM.EXIT
+			if (callbacks.exit) {
+				callbacks.exit(frame.node, frame.context);
+			}
+		}
+	}
+}
+
+/**
+ * Sentinel value returned from a `walkDOM` `enter` callback to abort the entire traversal
+ * immediately.
+ * A unique object is used instead of a `Symbol`, which ES5 runtimes do not provide.
+ *
+ * @type {Object}
+ */
+walkDOM.STOP = {};
+/**
+ * Phase constant for a stack frame that has not yet been visited.
+ * The `enter` callback is called and children are scheduled.
+ *
+ * @type {number}
+ */
+walkDOM.ENTER = 0;
+/**
+ * Phase constant for a stack frame whose subtree has been fully visited.
+ * The `exit` callback is called.
+ *
+ * @type {number}
+ */
+walkDOM.EXIT = 1;
 
 
 
@@ -1377,228 +1488,291 @@ function addSerializedAttribute(buf, qualifiedName, value) {
 	buf.push(' ', qualifiedName, '="', value.replace(/[<&"]/g,_xmlEncoder), '"')
 }
 
-function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed){
-	if(nodeFilter){
-		node = nodeFilter(node);
-		if(node){
-			if(typeof node == 'string'){
-				buf.push(node);
-				return;
-			}
-		}else{
-			return;
-		}
-		//buf.sort.apply(attrs, attributeSorter);
+/**
+ * Pushes a serialization frame for every child of `node` onto `stack`. Children are pushed from
+ * `lastChild` backwards, so `firstChild` ends up on top of the stack and is serialized first.
+ *
+ * @param {Array<Object>} stack
+ * @param {Node} node
+ * @param {boolean} isHTML
+ * @param {Array<Object>} [visibleNamespaces]
+ * @param {boolean} isScriptChild `true` when `node` is an HTML `<script>` element.
+ */
+function pushSerializeFrames(stack,node,isHTML,visibleNamespaces,isScriptChild){
+	var child = node.lastChild;
+	while(child){
+		stack.push({ node: child, isHTML: isHTML, visibleNamespaces: visibleNamespaces, isScriptChild: isScriptChild });
+		child = child.previousSibling;
 	}
-	switch(node.nodeType){
-	case ELEMENT_NODE:
-		if (!visibleNamespaces) visibleNamespaces = [];
-		var startVisibleNamespaces = visibleNamespaces.length;
-		var attrs = node.attributes;
-		var len = attrs.length;
-		var child = node.firstChild;
-		var nodeName = node.tagName;
-		
-		isHTML =  (htmlns === node.namespaceURI) ||isHTML 
-		buf.push('<',nodeName);
-		
-		
-		
-		for(var i=0;i<len;i++){
-			// add namespaces for attributes
-			var attr = attrs.item(i);
-			if (attr.prefix == 'xmlns') {
-				visibleNamespaces.push({ prefix: attr.localName, namespace: attr.value });
-			}else if(attr.nodeName == 'xmlns'){
-				visibleNamespaces.push({ prefix: '', namespace: attr.value });
-			}
+}
+
+/**
+ * Serializes `node` and its subtree into `buf`.
+ *
+ * The subtree is traversed with an explicit stack instead of recursion, so deeply nested trees
+ * can not exhaust the call stack. Each frame on the stack either holds a node to serialize
+ * (together with the `isHTML` flag and the `visibleNamespaces` its parent passes down), or the
+ * end tag of an element, which is pushed below the frames of that element's children.
+ *
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+ */
+function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed){
+	var stack = [{ node: node, isHTML: isHTML, visibleNamespaces: visibleNamespaces }];
+	while(stack.length > 0){
+		var frame = stack.pop();
+		if(frame.isEndTag){
+			// all children of the element have been serialized
+			buf.push('</',frame.nodeName,'>');
+			continue;
 		}
-		for(var i=0;i<len;i++){
-			var attr = attrs.item(i);
-			if (needNamespaceDefine(attr,isHTML, visibleNamespaces)) {
-				var prefix = attr.prefix||'';
-				var uri = attr.namespaceURI;
+		node = frame.node;
+		isHTML = frame.isHTML;
+		visibleNamespaces = frame.visibleNamespaces;
+		//if is cdata child node (of an HTML script element)
+		if(frame.isScriptChild && node.data){
+			buf.push(node.data);
+			continue;
+		}
+		if(nodeFilter){
+			node = nodeFilter(node);
+			if(node){
+				if(typeof node == 'string'){
+					buf.push(node);
+					continue;
+				}
+			}else{
+				continue;
+			}
+			//buf.sort.apply(attrs, attributeSorter);
+		}
+		switch(node.nodeType){
+		case ELEMENT_NODE:
+			if (!visibleNamespaces) visibleNamespaces = [];
+			var startVisibleNamespaces = visibleNamespaces.length;
+			var attrs = node.attributes;
+			var len = attrs.length;
+			var child = node.firstChild;
+			var nodeName = node.tagName;
+
+			isHTML =  (htmlns === node.namespaceURI) ||isHTML
+			buf.push('<',nodeName);
+
+
+
+			for(var i=0;i<len;i++){
+				// add namespaces for attributes
+				var attr = attrs.item(i);
+				if (attr.prefix == 'xmlns') {
+					visibleNamespaces.push({ prefix: attr.localName, namespace: attr.value });
+				}else if(attr.nodeName == 'xmlns'){
+					visibleNamespaces.push({ prefix: '', namespace: attr.value });
+				}
+			}
+			for(var i=0;i<len;i++){
+				var attr = attrs.item(i);
+				if (needNamespaceDefine(attr,isHTML, visibleNamespaces)) {
+					var prefix = attr.prefix||'';
+					var uri = attr.namespaceURI;
+					addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
+					visibleNamespaces.push({ prefix: prefix, namespace:uri });
+				}
+				// serializes the attribute itself, it does not descend into the element's subtree
+				serializeToString(attr,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed);
+			}
+			// add namespace for current node
+			if (needNamespaceDefine(node,isHTML, visibleNamespaces)) {
+				var prefix = node.prefix||'';
+				var uri = node.namespaceURI;
 				addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
 				visibleNamespaces.push({ prefix: prefix, namespace:uri });
 			}
-			serializeToString(attr,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed);
-		}
-		// add namespace for current node
-		if (needNamespaceDefine(node,isHTML, visibleNamespaces)) {
-			var prefix = node.prefix||'';
-			var uri = node.namespaceURI;
-			addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
-			visibleNamespaces.push({ prefix: prefix, namespace:uri });
-		}
-		
-		if(child || isHTML && !/^(?:meta|link|img|br|hr|input)$/i.test(nodeName)){
-			buf.push('>');
-			//if is cdata child node
-			if(isHTML && /^script$/i.test(nodeName)){
-				while(child){
-					if(child.data){
-						buf.push(child.data);
-					}else{
-						serializeToString(child,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed);
-					}
-					child = child.nextSibling;
+
+			if(child || isHTML && !/^(?:meta|link|img|br|hr|input)$/i.test(nodeName)){
+				buf.push('>');
+				// the end tag frame sits below the child frames, so it is popped after all of them
+				stack.push({ isEndTag: true, nodeName: nodeName });
+				//if is cdata child node
+				pushSerializeFrames(stack,node,isHTML,visibleNamespaces,isHTML && /^script$/i.test(nodeName));
+			}else{
+				buf.push('/>');
+			}
+			// remove added visible namespaces
+			//visibleNamespaces.length = startVisibleNamespaces;
+			break;
+		case DOCUMENT_NODE:
+		case DOCUMENT_FRAGMENT_NODE:
+			pushSerializeFrames(stack,node,isHTML,visibleNamespaces,false);
+			break;
+		case ATTRIBUTE_NODE:
+			addSerializedAttribute(buf, node.name, node.value);
+			break;
+		case TEXT_NODE:
+			buf.push(node.data.replace(/[<&]/g,_xmlEncoder));
+			break;
+		case CDATA_SECTION_NODE:
+			if (requireWellFormed && node.data.indexOf(']]>') !== -1) {
+				throw new DOMException(INVALID_STATE_ERR, 'The CDATASection data contains "]]>"');
+			}
+			buf.push( '<![CDATA[',node.data.replace(/]]>/g, ']]]]><![CDATA[>'),']]>');
+			break;
+		case COMMENT_NODE:
+			if(requireWellFormed){
+				if(InvalidChar.test(node.data)){
+					throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains characters outside the XML Char production');
 				}
-			}else
-			{
-				while(child){
-					serializeToString(child,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed);
-					child = child.nextSibling;
+				if(node.data.indexOf('--') !== -1 || node.data.charAt(node.data.length - 1) === '-'){
+					throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains "--" or ends with "-"');
 				}
 			}
-			buf.push('</',nodeName,'>');
-		}else{
-			buf.push('/>');
-		}
-		// remove added visible namespaces
-		//visibleNamespaces.length = startVisibleNamespaces;
-		return;
-	case DOCUMENT_NODE:
-	case DOCUMENT_FRAGMENT_NODE:
-		var child = node.firstChild;
-		while(child){
-			serializeToString(child,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed);
-			child = child.nextSibling;
-		}
-		return;
-	case ATTRIBUTE_NODE:
-		return addSerializedAttribute(buf, node.name, node.value);
-	case TEXT_NODE:
-		return buf.push(node.data.replace(/[<&]/g,_xmlEncoder));
-	case CDATA_SECTION_NODE:
-		if (requireWellFormed && node.data.indexOf(']]>') !== -1) {
-			throw new DOMException(INVALID_STATE_ERR, 'The CDATASection data contains "]]>"');
-		}
-		return buf.push( '<![CDATA[',node.data.replace(/]]>/g, ']]]]><![CDATA[>'),']]>');
-	case COMMENT_NODE:
-		if(requireWellFormed){
-			if(InvalidChar.test(node.data)){
-				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains characters outside the XML Char production');
+			buf.push( "<!--",node.data,"-->");
+			break;
+		case DOCUMENT_TYPE_NODE:
+			var pubid = node.publicId;
+			var sysid = node.systemId;
+			buf.push('<!DOCTYPE ',node.name);
+			if(pubid){
+				buf.push(' PUBLIC ', pubid);
+				if (sysid && sysid!='.') {
+					buf.push(' ', sysid);
+				}
+				buf.push('>');
+			}else if(sysid && sysid!='.'){
+				buf.push(' SYSTEM ', sysid, '>');
+			}else{
+				var sub = node.internalSubset;
+				if(sub){
+					buf.push(" [",sub,"]");
+				}
+				buf.push(">");
 			}
-			if(node.data.indexOf('--') !== -1 || node.data.charAt(node.data.length - 1) === '-'){
-				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains "--" or ends with "-"');
-			}
+			break;
+		case PROCESSING_INSTRUCTION_NODE:
+			buf.push( "<?",node.target," ",node.data,"?>");
+			break;
+		case ENTITY_REFERENCE_NODE:
+			buf.push( '&',node.nodeName,';');
+			break;
+		//case ENTITY_NODE:
+		//case NOTATION_NODE:
+		default:
+			buf.push('??',node.nodeName);
 		}
-		return buf.push( "<!--",node.data,"-->");
-	case DOCUMENT_TYPE_NODE:
-		var pubid = node.publicId;
-		var sysid = node.systemId;
-		buf.push('<!DOCTYPE ',node.name);
-		if(pubid){
-			buf.push(' PUBLIC ', pubid);
-			if (sysid && sysid!='.') {
-				buf.push(' ', sysid);
-			}
-			buf.push('>');
-		}else if(sysid && sysid!='.'){
-			buf.push(' SYSTEM ', sysid, '>');
-		}else{
-			var sub = node.internalSubset;
-			if(sub){
-				buf.push(" [",sub,"]");
-			}
-			buf.push(">");
-		}
-		return;
-	case PROCESSING_INSTRUCTION_NODE:
-		return buf.push( "<?",node.target," ",node.data,"?>");
-	case ENTITY_REFERENCE_NODE:
-		return buf.push( '&',node.nodeName,';');
-	//case ENTITY_NODE:
-	//case NOTATION_NODE:
-	default:
-		buf.push('??',node.nodeName);
 	}
 }
+/**
+ * Imports `node` (and its subtree when `deep` is set) into `doc`.
+ *
+ * The subtree is traversed iteratively (see {@link walkDOM}), so deeply nested trees can not
+ * exhaust the call stack.
+ *
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+ */
 function importNode(doc,node,deep){
-	var node2;
-	switch (node.nodeType) {
-	case ELEMENT_NODE:
-		node2 = node.cloneNode(false);
-		node2.ownerDocument = doc;
-		//var attrs = node2.attributes;
-		//var len = attrs.length;
-		//for(var i=0;i<len;i++){
-			//node2.setAttributeNodeNS(importNode(doc,attrs.item(i),deep));
-		//}
-	case DOCUMENT_FRAGMENT_NODE:
-		break;
-	case ATTRIBUTE_NODE:
-		deep = true;
-		break;
-	//case ENTITY_REFERENCE_NODE:
-	//case PROCESSING_INSTRUCTION_NODE:
-	////case TEXT_NODE:
-	//case CDATA_SECTION_NODE:
-	//case COMMENT_NODE:
-	//	deep = false;
-	//	break;
-	//case DOCUMENT_NODE:
-	//case DOCUMENT_TYPE_NODE:
-	//cannot be imported.
-	//case ENTITY_NODE:
-	//case NOTATION_NODE：
-	//can not hit in level3
-	//default:throw e;
-	}
-	if(!node2){
-		node2 = node.cloneNode(false);//false
-	}
-	node2.ownerDocument = doc;
-	node2.parentNode = null;
-	if(deep){
-		var child = node.firstChild;
-		while(child){
-			node2.appendChild(importNode(doc,child,deep));
-			child = child.nextSibling;
+	var root;
+	// the context of each node is the imported copy of its parent, `null` for the root
+	walkDOM(node, null, {
+		enter:function(node, parent){
+			var node2;
+			switch (node.nodeType) {
+			case ELEMENT_NODE:
+				node2 = node.cloneNode(false);
+				node2.ownerDocument = doc;
+				//var attrs = node2.attributes;
+				//var len = attrs.length;
+				//for(var i=0;i<len;i++){
+					//node2.setAttributeNodeNS(importNode(doc,attrs.item(i),deep));
+				//}
+			case DOCUMENT_FRAGMENT_NODE:
+				break;
+			case ATTRIBUTE_NODE:
+				deep = true;
+				break;
+			//case ENTITY_REFERENCE_NODE:
+			//case PROCESSING_INSTRUCTION_NODE:
+			////case TEXT_NODE:
+			//case CDATA_SECTION_NODE:
+			//case COMMENT_NODE:
+			//	deep = false;
+			//	break;
+			//case DOCUMENT_NODE:
+			//case DOCUMENT_TYPE_NODE:
+			//cannot be imported.
+			//case ENTITY_NODE:
+			//case NOTATION_NODE：
+			//can not hit in level3
+			//default:throw e;
+			}
+			if(!node2){
+				node2 = node.cloneNode(false);//false
+			}
+			node2.ownerDocument = doc;
+			node2.parentNode = null;
+			if(parent){
+				parent.appendChild(node2);
+			}else{
+				root = node2;
+			}
+			// descend into the children only for a deep import
+			return deep ? node2 : null;
 		}
-	}
-	return node2;
+	});
+	return root;
 }
 //
 //var _relationMap = {firstChild:1,lastChild:1,previousSibling:1,nextSibling:1,
 //					attributes:1,childNodes:1,parentNode:1,documentElement:1,doctype,};
+/**
+ * Clones `node` (and its subtree when `deep` is set) as a node owned by `doc`.
+ *
+ * The subtree is traversed iteratively (see {@link walkDOM}), so deeply nested trees can not
+ * exhaust the call stack.
+ *
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+ */
 function cloneNode(doc,node,deep){
-	var node2 = new node.constructor();
-	for (var n in node) {
-		if (Object.prototype.hasOwnProperty.call(node, n)) {
-			var v = node[n];
-			if (typeof v != "object") {
-				if (v != node2[n]) {
-					node2[n] = v;
+	var root;
+	// the context of each node is the clone of its parent, `null` for the root
+	walkDOM(node, null, {
+		enter:function(node, parent){
+			var node2 = new node.constructor();
+			for (var n in node) {
+				if (Object.prototype.hasOwnProperty.call(node, n)) {
+					var v = node[n];
+					if (typeof v != "object") {
+						if (v != node2[n]) {
+							node2[n] = v;
+						}
+					}
 				}
 			}
+			if(node.childNodes){
+				node2.childNodes = new NodeList();
+			}
+			node2.ownerDocument = doc;
+			switch (node2.nodeType) {
+			case ELEMENT_NODE:
+				var attrs	= node.attributes;
+				var attrs2	= node2.attributes = new NamedNodeMap();
+				var len = attrs.length
+				attrs2._ownerElement = node2;
+				for(var i=0;i<len;i++){
+					// attributes are not part of the child list walked here
+					node2.setAttributeNode(cloneNode(doc,attrs.item(i),true));
+				}
+				break;;
+			case ATTRIBUTE_NODE:
+				deep = true;
+			}
+			if(parent){
+				parent.appendChild(node2);
+			}else{
+				root = node2;
+			}
+			// descend into the children only for a deep clone
+			return deep ? node2 : null;
 		}
-	}
-	if(node.childNodes){
-		node2.childNodes = new NodeList();
-	}
-	node2.ownerDocument = doc;
-	switch (node2.nodeType) {
-	case ELEMENT_NODE:
-		var attrs	= node.attributes;
-		var attrs2	= node2.attributes = new NamedNodeMap();
-		var len = attrs.length
-		attrs2._ownerElement = node2;
-		for(var i=0;i<len;i++){
-			node2.setAttributeNode(cloneNode(doc,attrs.item(i),true));
-		}
-		break;;
-	case ATTRIBUTE_NODE:
-		deep = true;
-	}
-	if(deep){
-		var child = node.firstChild;
-		while(child){
-			node2.appendChild(cloneNode(doc,child,deep));
-			child = child.nextSibling;
-		}
-	}
-	return node2;
+	});
+	return root;
 }
 
 function __set__(object,key,value){
@@ -1637,18 +1811,28 @@ try{
 			}
 		})
 		
+		/**
+		 * The descendants are traversed iteratively (see {@link walkDOM}), so deeply nested trees
+		 * can not exhaust the call stack.
+		 *
+		 * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-2v35-w6hq-6mfw
+		 */
 		function getTextContent(node){
 			switch(node.nodeType){
 			case ELEMENT_NODE:
 			case DOCUMENT_FRAGMENT_NODE:
 				var buf = [];
-				node = node.firstChild;
-				while(node){
-					if(node.nodeType!==7 && node.nodeType !==8){
-						buf.push(getTextContent(node));
+				walkDOM(node, null, {
+					enter:function(n){
+						if(n.nodeType === ELEMENT_NODE || n.nodeType === DOCUMENT_FRAGMENT_NODE){
+							return true; // enter children
+						}
+						if(n.nodeType!==7 && n.nodeType !==8){
+							buf.push(n.nodeValue);
+						}
+						return null;
 					}
-					node = node.nextSibling;
-				}
+				});
 				return buf.join('');
 			default:
 				return node.nodeValue;
@@ -1665,4 +1849,5 @@ try{
 //if(typeof require == 'function'){
 	exports.DOMImplementation = DOMImplementation;
 	exports.XMLSerializer = XMLSerializer;
+	exports.walkDOM = walkDOM;
 //}

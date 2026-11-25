@@ -6,3 +6,5 @@ require('./element');
 require('./fragment');
 require('./level3');
 require('./serializer');
+require('./walk-dom');
+require('./recursion-regression');
