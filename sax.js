@@ -137,7 +137,9 @@ function parse(source,defaultNSMapCopy,entityMap,domBuilder,errorHandler){
 		        	domBuilder.endElement(config.uri,config.localName,tagName);
 					if(localNSMap){
 						for(var prefix in localNSMap){
-							domBuilder.endPrefixMapping(prefix) ;
+							if(Object.prototype.hasOwnProperty.call(localNSMap, prefix)){
+								domBuilder.endPrefixMapping(prefix) ;
+							}
 						}
 					}
 					if(!endMatch){
@@ -475,7 +477,9 @@ function appendElement(el,domBuilder,currentNSMap){
 		domBuilder.endElement(ns,localName,tagName);
 		if(localNSMap){
 			for(prefix in localNSMap){
-				domBuilder.endPrefixMapping(prefix) 
+				if(Object.prototype.hasOwnProperty.call(localNSMap, prefix)){
+					domBuilder.endPrefixMapping(prefix) 
+				}
 			}
 		}
 	}else{
@@ -522,7 +526,11 @@ function fixSelfClosed(source,elStartEnd,tagName,closeMap){
 	//} 
 }
 function _copy(source,target){
-	for(var n in source){target[n] = source[n]}
+	for(var n in source){
+		if(Object.prototype.hasOwnProperty.call(source, n)){
+			target[n] = source[n];
+		}
+	}
 }
 function parseDCC(source,start,domBuilder,errorHandler){//sure start with '<!'
 	var next= source.charAt(start+2)
