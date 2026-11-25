@@ -165,3 +165,70 @@ describe('XMLSerializer serializeToString requireWellFormed option', () => {
 		).toThrow(INVALID_STATE_ERR)
 	})
 })
+
+describe('XMLSerializer Comment serialization with requireWellFormed', () => {
+	let doc
+	beforeEach(() => {
+		doc = new DOMImplementation().createDocument(null, 'root', null)
+	})
+
+	it('default: comment with "-->" in data emits verbatim - no throw', () => {
+		doc.documentElement.appendChild(doc.createComment('hello-->world'))
+		expect(new XMLSerializer().serializeToString(doc)).toBe(
+			'<root><!--hello-->world--></root>'
+		)
+	})
+
+	it('default: comment with "--" in data emits verbatim - no throw', () => {
+		doc.documentElement.appendChild(doc.createComment('hello--world'))
+		expect(new XMLSerializer().serializeToString(doc)).toBe(
+			'<root><!--hello--world--></root>'
+		)
+	})
+
+	it('requireWellFormed: true on comment with invalid XML Char (\\x00) throws InvalidStateError', () => {
+		doc.documentElement.appendChild(
+			doc.createComment('hello' + String.fromCharCode(0) + 'world')
+		)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on comment with "-->" throws InvalidStateError', () => {
+		doc.documentElement.appendChild(doc.createComment('hello-->world'))
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on comment with "--" (no "-->") throws InvalidStateError', () => {
+		doc.documentElement.appendChild(doc.createComment('hello--world'))
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on comment whose data ends with "-" throws InvalidStateError', () => {
+		doc.documentElement.appendChild(doc.createComment('hello-'))
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on comment with clean data does not throw', () => {
+		doc.documentElement.appendChild(doc.createComment('clean comment'))
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).not.toThrow()
+	})
+
+	it('mutation vector: appendData("-->") then requireWellFormed: true throws InvalidStateError', () => {
+		const comment = doc.createComment('clean')
+		doc.documentElement.appendChild(comment)
+		comment.appendData('-->')
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+})

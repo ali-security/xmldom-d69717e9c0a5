@@ -69,6 +69,16 @@ function _extends(Class,Super){
 	}
 }
 var htmlns = 'http://www.w3.org/1999/xhtml' ;
+/**
+ * Matches any character outside the XML 1.0 `Char` production:
+ * `#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`.
+ * Characters above `#xFFFF` are UTF-16 surrogate pairs in a JS string, so a well-paired
+ * surrogate is accepted and only a lone (unpaired) surrogate matches.
+ * Written without the ES2015 `u` flag so it works in ES5 runtimes.
+ *
+ * @see https://www.w3.org/TR/xml/#NT-Char
+ */
+var InvalidChar = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 // Node Types
 var NodeType = {}
 var ELEMENT_NODE                = NodeType.ELEMENT_NODE                = 1;
@@ -965,6 +975,19 @@ Document.prototype = {
 		node.appendData(data)
 		return node;
 	},
+	/**
+	 * @param {string} data
+	 * @returns {Comment}
+	 * @see https://dom.spec.whatwg.org/#dom-document-createcomment
+	 * @see https://www.w3.org/TR/xml/#NT-Comment XML 1.0 production [15]
+	 * @see https://www.w3.org/TR/DOM-Parsing/#dfn-concept-serialize-xml §3.2.1.3
+	 *
+	 *      Note: no validation is performed at creation time. When the resulting document is
+	 *      serialized with `requireWellFormed: true`, the serializer throws `InvalidStateError`
+	 *      if the comment data contains `--` anywhere, ends with `-`, or contains characters
+	 *      outside the XML Char production (W3C DOM Parsing §3.2.1.3). Without that option the
+	 *      data is emitted verbatim.
+	 */
 	createComment :	function(data){
 		var node = new Comment();
 		node.ownerDocument = this;
@@ -1270,19 +1293,26 @@ function XMLSerializer(){}
  *   are **not implemented** in this release.
  *
  * @param {Node} node
- * @param {boolean} [isHtml]
+ * @param {boolean|Object} [isHtml]
+ * The options object can also be passed in this position (`serializeToString(node, options)`).
  * @param {function} [nodeFilter]
  * @param {Object} [options]
  * @param {boolean} [options.requireWellFormed=false]
  * When `true`, throws for content that would produce ill-formed XML.
  * @returns {string}
  * @throws {DOMException}
- * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and the CDATASection
- * data contains `"]]>"`.
+ * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and any of the following
+ * conditions hold: the CDATASection data contains `"]]>"`; a Comment node's data contains
+ * `--` anywhere, ends with `-`, or contains characters outside the XML Char production.
  * @see https://html.spec.whatwg.org/#dom-xmlserializer-serializetostring
  * @see https://github.com/w3c/DOM-Parsing/issues/84
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-j759-j44w-7fr8
  */
 XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter,options){
+	if(options == null && isHtml && typeof isHtml === 'object'){
+		options = isHtml;
+		isHtml = undefined;
+	}
 	return nodeSerializeToString.call(node,isHtml,nodeFilter,options);
 }
 Node.prototype.toString = nodeSerializeToString;
@@ -1445,6 +1475,14 @@ function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireW
 		}
 		return buf.push( '<![CDATA[',node.data.replace(/]]>/g, ']]]]><![CDATA[>'),']]>');
 	case COMMENT_NODE:
+		if(requireWellFormed){
+			if(InvalidChar.test(node.data)){
+				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains characters outside the XML Char production');
+			}
+			if(node.data.indexOf('--') !== -1 || node.data.charAt(node.data.length - 1) === '-'){
+				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains "--" or ends with "-"');
+			}
+		}
 		return buf.push( "<!--",node.data,"-->");
 	case DOCUMENT_TYPE_NODE:
 		var pubid = node.publicId;
