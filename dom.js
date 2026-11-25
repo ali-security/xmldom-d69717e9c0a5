@@ -964,6 +964,16 @@ function needNamespaceDefine(node,isHTML, visibleNamespaces) {
 	//console.error(3,true,node.flag,node.prefix,node.namespaceURI)
 	return true;
 }
+/**
+ * Well-formed constraint: No < in Attribute Values
+ * The replacement text of any entity referred to directly or indirectly in an attribute value must not contain a <.
+ * @see https://www.w3.org/TR/xml/#CleanAttrVals
+ * @see https://www.w3.org/TR/xml/#NT-AttValue
+ */
+function addSerializedAttribute(buf, qualifiedName, value) {
+	buf.push(' ', qualifiedName, '="', value.replace(/[<&"]/g,_xmlEncoder), '"')
+}
+
 function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces){
 	if(nodeFilter){
 		node = nodeFilter(node);
@@ -1005,18 +1015,16 @@ function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces){
 			if (needNamespaceDefine(attr,isHTML, visibleNamespaces)) {
 				var prefix = attr.prefix||'';
 				var uri = attr.namespaceURI;
-				var ns = prefix ? ' xmlns:' + prefix : " xmlns";
-				buf.push(ns, '="' , uri , '"');
+				addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
 				visibleNamespaces.push({ prefix: prefix, namespace:uri });
 			}
 			serializeToString(attr,buf,isHTML,nodeFilter,visibleNamespaces);
 		}
-		// add namespace for current node		
+		// add namespace for current node
 		if (needNamespaceDefine(node,isHTML, visibleNamespaces)) {
 			var prefix = node.prefix||'';
 			var uri = node.namespaceURI;
-			var ns = prefix ? ' xmlns:' + prefix : " xmlns";
-			buf.push(ns, '="' , uri , '"');
+			addSerializedAttribute(buf, prefix ? 'xmlns:' + prefix : "xmlns", uri);
 			visibleNamespaces.push({ prefix: prefix, namespace:uri });
 		}
 		
@@ -1055,7 +1063,7 @@ function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces){
 		}
 		return;
 	case ATTRIBUTE_NODE:
-		return buf.push(' ',node.name,'="',node.value.replace(/[<&"]/g,_xmlEncoder),'"');
+		return addSerializedAttribute(buf, node.name, node.value);
 	case TEXT_NODE:
 		return buf.push(node.data.replace(/[<&]/g,_xmlEncoder));
 	case CDATA_SECTION_NODE:
