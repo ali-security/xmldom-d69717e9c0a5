@@ -472,3 +472,148 @@ wows.describe('XMLSerializer DocumentType serialization with requireWellFormed')
     assert.equal(serializer.serializeToString(doc, {requireWellFormed: true}), '<!DOCTYPE root><root/>');
   },
 }).run();
+
+// Builds a <root/> document with a ProcessingInstruction child created from `target` and `data`.
+function createPIDoc(target, data) {
+  var doc = createRootDoc();
+  doc.documentElement.appendChild(doc.createProcessingInstruction(target, data));
+  return doc;
+}
+// Serializes `root` with requireWellFormed: true and asserts it throws InvalidStateError.
+function assertPIRejected(root) {
+  assertDOMException(function() {
+    new XMLSerializer().serializeToString(root, {requireWellFormed: true});
+  }, INVALID_STATE_ERR);
+}
+// The payload closes the processing instruction early and adds an <injected/> sibling element.
+var PI_INJECTION = '?><injected/><?q ';
+
+wows.describe('XMLSerializer ProcessingInstruction serialization with requireWellFormed').addBatch({
+  'createProcessingInstruction accepts any target or data without throwing': function() {
+    var doc = new DOMParser().parseFromString('<xml></xml>', 'text/xml');
+    assert.doesNotThrow(function() { doc.createProcessingInstruction('ns:bad', 'data'); });
+    assert.doesNotThrow(function() { doc.createProcessingInstruction('xml', '?>'); });
+    assert.doesNotThrow(function() { doc.createProcessingInstruction('foo', 'inject?>evil'); });
+  },
+  'default: PI with ":" in target emits verbatim - no throw': function() {
+    assert.equal(new XMLSerializer().serializeToString(createPIDoc('ns:target', 'data')), '<root><?ns:target data?></root>');
+  },
+  'default: PI with target "xml" emits verbatim - no throw': function() {
+    assert.equal(new XMLSerializer().serializeToString(createPIDoc('xml', 'version="1.0"')), '<root><?xml version="1.0"?></root>');
+  },
+  'default: PI with invalid XML Char in data emits verbatim - no throw': function() {
+    var data = 'data' + String.fromCharCode(0) + 'here';
+    assert.equal(new XMLSerializer().serializeToString(createPIDoc('foo', data)), '<root><?foo ' + data + '?></root>');
+  },
+  'default: PI with "?>" in data emits verbatim - no throw': function() {
+    assert.equal(new XMLSerializer().serializeToString(createPIDoc('foo', 'inject?>evil')), '<root><?foo inject?>evil?></root>');
+  },
+  'default: the PI breakout payload injects an element (the attack surface)': function() {
+    var doc = createPIDoc('a', PI_INJECTION);
+    assert.equal(new XMLSerializer().serializeToString(doc), '<root><?a ?><injected/><?q ?></root>');
+    assert.strictEqual(isInjected(doc), true);
+  },
+  'requireWellFormed: true on PI with ":" in target throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('ns:target', 'data'));
+  },
+  'requireWellFormed: true on PI with target "xml" throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('xml', 'version="1.0"'));
+  },
+  'requireWellFormed: true on PI with target "XML" (uppercase) throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('XML', 'data'));
+  },
+  'requireWellFormed: true on PI with target "Xml" (mixed case) throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('Xml', 'data'));
+  },
+  'requireWellFormed: true on PI with invalid XML Char (\\x00) in data throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('foo', 'data' + String.fromCharCode(0) + 'here'));
+  },
+  'requireWellFormed: true on PI with a lone surrogate in data throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('foo', 'high ' + String.fromCharCode(0xD83D) + ' only'));
+    assertPIRejected(createPIDoc('foo', 'low ' + String.fromCharCode(0xDE00) + ' only'));
+  },
+  'requireWellFormed: true on PI with "?>" in data throws InvalidStateError': function() {
+    assertPIRejected(createPIDoc('foo', 'inject?>evil'));
+  },
+  'requireWellFormed: true on PI with clean target and data does not throw': function() {
+    var doc = createPIDoc('xml-stylesheet', 'href="style.css"');
+    assert.equal(new XMLSerializer().serializeToString(doc, {requireWellFormed: true}), '<root><?xml-stylesheet href="style.css"?></root>');
+  },
+  'requireWellFormed: true accepts "xml" as a prefix of a longer target and a well-paired surrogate in data': function() {
+    var data = 'smile ' + String.fromCharCode(0xD83D, 0xDE00) + ' end ?';
+    var doc = createPIDoc('xmlfoo', data);
+    assert.equal(new XMLSerializer().serializeToString(doc, {requireWellFormed: true}), '<root><?xmlfoo ' + data + '?></root>');
+  },
+  'PoC: createProcessingInstruction with a PI-breakout payload throws instead of injecting a node': function() {
+    var doc = createPIDoc('a', PI_INJECTION);
+    assertPIRejected(doc);
+    assertPIRejected(doc.documentElement);
+  },
+  'mutation vector: set PI data to "?>" then requireWellFormed: true throws InvalidStateError': function() {
+    var doc = createRootDoc();
+    var pi = doc.createProcessingInstruction('foo', 'clean');
+    doc.documentElement.appendChild(pi);
+    pi.data = 'inject?>evil';
+    assertPIRejected(doc);
+  },
+  'mutation vector: .textContent assignment introduces "?>"': function() {
+    var doc = createRootDoc();
+    var pi = doc.createProcessingInstruction('foo', 'clean');
+    doc.documentElement.appendChild(pi);
+    pi.textContent = PI_INJECTION;
+    assertPIRejected(doc);
+  },
+  'mutation vector: .target assignment introduces a reserved or prefixed target': function() {
+    var doc = createRootDoc();
+    var pi = doc.createProcessingInstruction('foo', 'data');
+    doc.documentElement.appendChild(pi);
+    pi.target = 'xMl';
+    assertPIRejected(doc);
+    pi.target = 'a:b';
+    assertPIRejected(doc);
+  },
+  'PI nested in an element, a DocumentFragment or directly in the Document is checked': function() {
+    var doc = createRootDoc();
+    var child = doc.createElement('child');
+    child.appendChild(doc.createProcessingInstruction('a', PI_INJECTION));
+    doc.documentElement.appendChild(child);
+    assertPIRejected(doc);
+    var fragment = doc.createDocumentFragment();
+    fragment.appendChild(doc.createProcessingInstruction('a', PI_INJECTION));
+    assertPIRejected(fragment);
+    var doc2 = createRootDoc();
+    doc2.insertBefore(doc2.createProcessingInstruction('a', PI_INJECTION), doc2.documentElement);
+    assertPIRejected(doc2);
+  },
+  'cloned PIs are checked': function() {
+    var doc = createPIDoc('a', PI_INJECTION);
+    assertPIRejected(doc.documentElement.cloneNode(true));
+  },
+  'every serialization entry point applies the ProcessingInstruction checks': function() {
+    var doc = createPIDoc('a', PI_INJECTION);
+    var pi = doc.documentElement.firstChild;
+    assertDOMException(function() {
+      new XMLSerializer().serializeToString(doc, false, null, {requireWellFormed: true});
+    }, INVALID_STATE_ERR);
+    assertDOMException(function() {
+      doc.toString(false, null, {requireWellFormed: true});
+    }, INVALID_STATE_ERR);
+    assertDOMException(function() {
+      doc.documentElement.childNodes.toString(false, null, {requireWellFormed: true});
+    }, INVALID_STATE_ERR);
+    assertDOMException(function() {
+      pi.toString(false, null, {requireWellFormed: true});
+    }, INVALID_STATE_ERR);
+    assertPIRejected(pi);
+  },
+  'requireWellFormed: false or an options-only call keeps the default XML output': function() {
+    var doc = createPIDoc('foo', 'inject?>evil');
+    assert.equal(new XMLSerializer().serializeToString(doc, {requireWellFormed: false}), '<root><?foo inject?>evil?></root>');
+    assert.equal(new XMLSerializer().serializeToString(doc, false, null, {requireWellFormed: false}), '<root><?foo inject?>evil?></root>');
+  },
+  'requireWellFormed: true serializes a parsed document with a clean PI unchanged': function() {
+    var xml = '<root><?xml-stylesheet href="a.css" type="text/css"?><a/></root>';
+    var doc = new DOMParser().parseFromString(xml, 'text/xml');
+    assert.equal(new XMLSerializer().serializeToString(doc, {requireWellFormed: true}), xml);
+  },
+}).run();

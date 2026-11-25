@@ -348,6 +348,107 @@ describe('XMLSerializer DocumentType serialization with requireWellFormed', () =
 	})
 })
 
+describe('XMLSerializer ProcessingInstruction serialization with requireWellFormed', () => {
+	let doc
+	beforeEach(() => {
+		doc = new DOMImplementation().createDocument(null, 'root', null)
+	})
+
+	it('default: PI with ":" in target emits verbatim - no throw', () => {
+		const pi = doc.createProcessingInstruction('ns:target', 'data')
+		doc.documentElement.appendChild(pi)
+		expect(() => new XMLSerializer().serializeToString(doc)).not.toThrow()
+	})
+
+	it('default: PI with target "xml" emits verbatim - no throw', () => {
+		const pi = doc.createProcessingInstruction('xml', 'version="1.0"')
+		doc.documentElement.appendChild(pi)
+		expect(() => new XMLSerializer().serializeToString(doc)).not.toThrow()
+	})
+
+	it('default: PI with invalid XML Char in data emits verbatim - no throw', () => {
+		const pi = doc.createProcessingInstruction('foo', 'data\x00here')
+		doc.documentElement.appendChild(pi)
+		expect(() => new XMLSerializer().serializeToString(doc)).not.toThrow()
+	})
+
+	it('default: PI with "?>" in data emits verbatim - no throw', () => {
+		const pi = doc.createProcessingInstruction('foo', 'inject?>evil')
+		doc.documentElement.appendChild(pi)
+		expect(new XMLSerializer().serializeToString(doc)).toBe(
+			'<root><?foo inject?>evil?></root>'
+		)
+	})
+
+	it('requireWellFormed: true on PI with ":" in target throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('ns:target', 'data')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with target "xml" throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('xml', 'version="1.0"')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with target "XML" (uppercase) throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('XML', 'data')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with target "Xml" (mixed case) throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('Xml', 'data')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with invalid XML Char (\\x00) in data throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('foo', 'data\x00here')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with "?>" in data throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('foo', 'inject?>evil')
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on PI with clean target and data does not throw', () => {
+		const pi = doc.createProcessingInstruction(
+			'xml-stylesheet',
+			'href="style.css"'
+		)
+		doc.documentElement.appendChild(pi)
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).not.toThrow()
+	})
+
+	it('mutation vector: set PI data to "?>" then requireWellFormed: true throws InvalidStateError', () => {
+		const pi = doc.createProcessingInstruction('foo', 'clean')
+		doc.documentElement.appendChild(pi)
+		pi.data = 'inject?>evil'
+		expect(() =>
+			new XMLSerializer().serializeToString(doc, { requireWellFormed: true })
+		).toThrow(INVALID_STATE_ERR)
+	})
+})
+
 describe('deep tree (stack overflow guard)', () => {
 	it('serializeToString on a 5,100-depth tree succeeds without throwing RangeError (GHSA-2v35-w6hq-6mfw)', () => {
 		const deepDoc = new DOMImplementation().createDocument(null, 'root')
