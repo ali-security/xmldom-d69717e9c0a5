@@ -233,6 +233,121 @@ describe('XMLSerializer Comment serialization with requireWellFormed', () => {
 	})
 })
 
+describe('XMLSerializer DocumentType serialization with requireWellFormed', () => {
+	it('default: DocumentType with invalid publicId serializes verbatim - no throw', () => {
+		const doctype = new DOMImplementation().createDocumentType(
+			'name',
+			'"invalid<char"',
+			''
+		)
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() => new XMLSerializer().serializeToString(dtDoc)).not.toThrow()
+	})
+
+	it('requireWellFormed: true on DocumentType with invalid publicId throws', () => {
+		const doctype = new DOMImplementation().createDocumentType(
+			'name',
+			'"invalid<char"',
+			''
+		)
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on DocumentType with invalid systemId throws', () => {
+		const doctype = new DOMImplementation().createDocumentType(
+			'name',
+			'',
+			'no-quotes-around-this'
+		)
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on DocumentType with "]>" in internalSubset throws', () => {
+		const doctype = new DOMImplementation().createDocumentType('name', '', '')
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		doctype.internalSubset = ']><injected/>'
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on DocumentType with valid fields does not throw', () => {
+		const doctype = new DOMImplementation().createDocumentType(
+			'html',
+			'"-//W3C//DTD HTML 4.01//EN"',
+			'"http://www.w3.org/TR/html4/strict.dtd"'
+		)
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).not.toThrow()
+	})
+
+	it('direct property write: setting invalid publicId then requireWellFormed: true throws', () => {
+		const doctype = new DOMImplementation().createDocumentType(
+			'name',
+			'"-//W3C//DTD//EN"',
+			''
+		)
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		doctype.publicId = '"invalid<char"'
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('default: DocumentType with invalid name serializes verbatim - no throw', () => {
+		const doctype = new DOMImplementation().createDocumentType('html', '', '')
+		doctype.name =
+			'html><script xmlns="http://www.w3.org/1999/xhtml">alert(1)</script'
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		let out
+		expect(
+			() => (out = new XMLSerializer().serializeToString(dtDoc))
+		).not.toThrow()
+		expect(out).toContain('<!DOCTYPE html><script')
+	})
+
+	it('requireWellFormed: true on DocumentType with ">" in name throws', () => {
+		const doctype = new DOMImplementation().createDocumentType('html', '', '')
+		doctype.name =
+			'html><script xmlns="http://www.w3.org/1999/xhtml">alert(1)</script'
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+
+	it('requireWellFormed: true on DocumentType with whitespace in name throws', () => {
+		const doctype = new DOMImplementation().createDocumentType('html', '', '')
+		doctype.name = 'ht ml'
+		const dtDoc = new DOMImplementation().createDocument(null, 'root', doctype)
+		expect(() =>
+			new XMLSerializer().serializeToString(dtDoc, false, null, {
+				requireWellFormed: true,
+			})
+		).toThrow(INVALID_STATE_ERR)
+	})
+})
+
 describe('deep tree (stack overflow guard)', () => {
 	it('serializeToString on a 5,100-depth tree succeeds without throwing RangeError (GHSA-2v35-w6hq-6mfw)', () => {
 		const deepDoc = new DOMImplementation().createDocument(null, 'root')
