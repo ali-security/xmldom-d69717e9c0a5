@@ -127,6 +127,15 @@ function parse(source,defaultNSMapCopy,entityMap,domBuilder,errorHandler){
 	        		tagName = tagName.replace(/[\s<].*/,'');
 	        		errorHandler.error("end tag name: "+tagName+' maybe not complete');
 	        		end = tagStart+1+tagName.length;
+				}else if(/[ \t\n\r]/.test(tagName.replace(/[ \t\n\r]+$/,'')) && tagNamePattern.test(tagName.split(/[ \t\n\r]/)[0])){
+					// The XML `ETag` production is `'</' Name S? '>'`: only optional whitespace may follow
+					// the `Name`. A valid `Name` followed by whitespace and non-whitespace residue (e.g.
+					// `</a\nbogus>` or `</a bogus>`) is not well-formed, but historically it was silently
+					// accepted (the malformed end tag ignored, the residue dropped, the element left on the
+					// stack). Report it as a recoverable `error` (which a custom errorHandler may escalate to
+					// fatal) while keeping the existing recovery so the parsed DOM stays byte-identical.
+					// Trailing whitespace alone (`</a >`, `</a\r\n>`) is not residue and is not reported here.
+					errorHandler.error('end tag name is followed by whitespace and trailing content: "'+tagName+'"');
 				}
 				//console.error(parseStack.length,parseStack)
 				//console.error(config);
